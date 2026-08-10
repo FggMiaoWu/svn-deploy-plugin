@@ -1,0 +1,26 @@
+<idea-plugin>
+    <id>com.deploy.svn-deploy</id>
+    <name>SVN Deploy</name>
+    <vendor email="" url="">svn-deploy</vendor>
+
+    <description><![CDATA[
+        SVN 增量部署工具：通过 SVN 版本号或本地修改获取改动文件，图形化勾选后生成部署脚本。
+    ]]></description>
+
+    <!-- 依赖 IntelliJ Platform 核心模块 -->
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.vcs</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+    </extensions>
+
+    <actions>
+        <!-- 注册部署 Action，挂到项目右键菜单 -->
+        <action id="SvnDeploy.Deploy"
+                class="com.deploy.DeployAction"
+                text="SVN 部署"
+                description="图形化选择 SVN 修改文件并生成部署脚本">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>

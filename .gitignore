@@ -1,0 +1,21 @@
+# Gradle
+.gradle/
+build/
+
+# IntelliJ IDEA 项目配置（本机特定）
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# IDEA SDK 包装目录（软链接到本机 IDEA，不应提交）
+.idea-sdk/
+
+# SVN 元数据
+.svn/
+
+# macOS
+.DS_Store
+
+# 日志
+*.log
