@@ -120,43 +120,33 @@ public class DeployService {
     /**
      * 获取最近 N 条 SVN 提交记录（用于版本号下拉框提示）。
      * <p>
-     * 实现方式参考 {@link #getFilePathsForRevision}：用 ProcessBuilder 启动
-     * {@code svn log -l N}，同步读取输出流，waitFor 等待进程结束。
+     * 执行 {@code svn log -l N}，分页由调用方递增 limit 实现（首页 limit=5，
+     * 加载更多 limit=10、15...），UI 层对返回结果去重追加。
      * <p>
-     * 与 getFilePathsForRevision 的差异：
-     * <ul>
-     *   <li>工作目录用 projectRoot（获取仓库整体提交记录，而非某子目录）</li>
-     *   <li>显式设置 LANG=zh_CN.UTF-8 并用 UTF-8 解码流，避免中文提交信息被 SVN 转义成 {U+XXXX}</li>
-     *   <li>用正则解析头部行，提取 版本号/作者/提交信息</li>
-     * </ul>
+     * 工作目录优先用 srcDir，srcDir 为空或不存在时回退到 projectRoot。
      *
-     * @param limit 最多获取多少条（建议 5）
-     * @return 提交记录列表；获取失败时返回空列表
-     */
-    public List<SvnLogEntry> getRecentSvnLogs(int limit) {
-        return getRecentSvnLogs(limit, null);
-    }
-
-    /**
-     * 获取 SVN 提交记录。
-     *
-     * @param limit          最多获取多少条
-     * @param startRevision  分页用：起始版本号（纯数字，不含 r 前缀）。
-     *                       为 null 时查最新 limit 条；非 null 时查 startRevision:1 范围的 limit 条
-     *                       （即从 startRevision 往前翻页）。
+     * @param limit 最多获取多少条
      * @return 提交记录列表
      */
-    public List<SvnLogEntry> getRecentSvnLogs(int limit, String startRevision) {
-        List<SvnLogEntry> result = new ArrayList<>();
-        // 工作目录优先用 srcDir（用户实际操作 SVN 的目录，与 getFilePathsForRevision 一致），
-        // srcDir 为空或不存在时回退到 projectRoot
+    public List<SvnLogEntry> getRecentSvnLogs(int limit) {
         File workDir;
         if (srcDir != null && new File(srcDir).isDirectory()) {
             workDir = new File(srcDir);
         } else {
             workDir = new File(projectRoot);
         }
+        return runSvnLog(workDir, limit);
+    }
 
+    /**
+     * 实际执行 svn log -l limit 并解析结果。
+     *
+     * @param workDir svn log 执行的工作目录
+     * @param limit   最多获取多少条
+     * @return 提交记录列表
+     */
+    private List<SvnLogEntry> runSvnLog(File workDir, int limit) {
+        List<SvnLogEntry> result = new ArrayList<>();
         Process process = null;
         try {
             List<String> cmd = new ArrayList<>();
@@ -164,11 +154,6 @@ public class DeployService {
             cmd.add("log");
             cmd.add("-l");
             cmd.add(String.valueOf(limit));
-            // 分页：指定版本范围 startRevision:1，从 startRevision 往前查 limit 条
-            if (startRevision != null && !startRevision.isEmpty()) {
-                cmd.add("-r");
-                cmd.add(startRevision + ":1");
-            }
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.directory(workDir);
             // 设置 locale 为 UTF-8，避免 SVN 把中文转义成 {U+XXXX}

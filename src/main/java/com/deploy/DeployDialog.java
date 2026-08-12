@@ -50,10 +50,12 @@ public class DeployDialog extends DialogWrapper {
     // 最近提交记录表格（复选框列 + 版本号/作者/提交信息，勾选后自动填入版本号）
     private JTable tableRecentRevisions;
     private DefaultTableModel tableModel;
-    // 已加载的最旧版本号（纯数字），用于「加载更多」分页；为 0 表示尚未加载
-    private int oldestLoadedRevision = 0;
+    // 当前查询的 limit（首页 5，每次「加载更多」+5）；为 0 表示尚未加载
+    private int currentLimit = 0;
     // 「加载更多」按钮（无更多记录时禁用）
     private JButton btnLoadMore;
+    // SVN 历史相关 UI 容器（版本号输入 + 获取按钮 + 记录表格），仅在选择 SVN 历史时显示
+    private JPanel svnHistoryPanel;
 
     // 文件勾选树（按包路径分组，可折叠展开）
     private CheckboxTree fileTree;
@@ -121,24 +123,35 @@ public class DeployDialog extends DialogWrapper {
         modePanel.add(rbLocal);
         modePanel.add(Box.createHorizontalStrut(16));
         modePanel.add(rbSvnHistory);
+        // 切换获取方式时，按需显示/隐藏 SVN 历史 UI
+        rbLocal.addActionListener(e -> updateSvnHistoryVisibility());
+        rbSvnHistory.addActionListener(e -> updateSvnHistoryVisibility());
         panel.add(modePanel, gbc);
 
-        // ---- 版本号输入 ----
-        gbc.gridx = 0; gbc.gridy = 2;
-        panel.add(new JBLabel("SVN 版本号:"), gbc);
-        gbc.gridx = 1;
+        // ---- SVN 历史区域（版本号输入 + 获取按钮 + 记录表格），按需显示 ----
+        // 打包进独立 JPanel，便于整体切换可见性
+        svnHistoryPanel = new JPanel(new GridBagLayout());
+        GridBagConstraints hgbc = new GridBagConstraints();
+        hgbc.insets = new Insets(4, 0, 4, 0);
+        hgbc.anchor = GridBagConstraints.WEST;
+        hgbc.fill = GridBagConstraints.HORIZONTAL;
+
+        // 版本号输入
+        hgbc.gridx = 0; hgbc.gridy = 0;
+        svnHistoryPanel.add(new JBLabel("SVN 版本号:"), hgbc);
+        hgbc.gridx = 1;
         tfRevisions = new JTextField(30);
         tfRevisions.setToolTipText("多个版本用逗号分隔，如: r1562,r1565。下方表格多选后会自动填入");
-        panel.add(tfRevisions, gbc);
+        svnHistoryPanel.add(tfRevisions, hgbc);
 
-        // ---- 获取提交记录按钮 + 加载更多按钮 ----
-        gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 2;
+        // 获取提交记录按钮 + 加载更多按钮
+        hgbc.gridx = 0; hgbc.gridy = 1; hgbc.gridwidth = 2;
         JButton btnFetchLogs = new JButton("获取 SVN 提交记录");
         btnFetchLogs.setToolTipText("异步加载最近 5 条提交记录到下方表格，勾选后自动填入版本号");
         btnFetchLogs.addActionListener(e -> {
             // 重新获取：清空已有数据和分页状态
             tableModel.setRowCount(0);
-            oldestLoadedRevision = 0;
+            currentLimit = 0;
             btnLoadMore.setEnabled(false);
             loadRecentRevisions();
         });
@@ -150,12 +163,12 @@ public class DeployDialog extends DialogWrapper {
         logBtnPanel.add(btnFetchLogs);
         logBtnPanel.add(Box.createHorizontalStrut(8));
         logBtnPanel.add(btnLoadMore);
-        panel.add(logBtnPanel, gbc);
+        svnHistoryPanel.add(logBtnPanel, hgbc);
 
-        // ---- 提交记录表格（复选框 / 版本号 / 作者 / 提交信息） ----
-        gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 2;
-        gbc.weightx = 1.0; gbc.weighty = 0.3;
-        gbc.fill = GridBagConstraints.BOTH;
+        // 提交记录表格（复选框 / 版本号 / 作者 / 提交信息）
+        hgbc.gridx = 0; hgbc.gridy = 2; hgbc.gridwidth = 2;
+        hgbc.weightx = 1.0; hgbc.weighty = 0.3;
+        hgbc.fill = GridBagConstraints.BOTH;
         // 第一列 Boolean 类型，JTable 默认用 JCheckBox 渲染和编辑；其余列不可编辑
         tableModel = new DefaultTableModel(new Object[]{"选", "版本号", "作者", "提交信息"}, 0) {
             @Override
@@ -181,11 +194,18 @@ public class DeployDialog extends DialogWrapper {
             syncSelectedRevisionsToTextField();
         });
         JBScrollPane tableScroll = new JBScrollPane(tableRecentRevisions);
-        tableScroll.setPreferredSize(new Dimension(600, 120));
-        panel.add(tableScroll, gbc);
+        // 高度需容纳表头 + 5 行（每行 24px）+ 滚动条余量，约 180
+        tableScroll.setPreferredSize(new Dimension(600, 180));
+        svnHistoryPanel.add(tableScroll, hgbc);
+
+        // 将 SVN 历史面板加入主面板，占两列
+        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 2;
+        gbc.weightx = 1.0; gbc.weighty = 0.3;
+        gbc.fill = GridBagConstraints.BOTH;
+        panel.add(svnHistoryPanel, gbc);
 
         // ---- 获取文件按钮 ----
-        gbc.gridx = 1; gbc.gridy = 5; gbc.gridwidth = 1;
+        gbc.gridx = 1; gbc.gridy = 3; gbc.gridwidth = 1;
         gbc.weighty = 0;
         gbc.fill = GridBagConstraints.HORIZONTAL;
         JButton btnFetch = new JButton("获取修改文件");
@@ -193,7 +213,7 @@ public class DeployDialog extends DialogWrapper {
         panel.add(btnFetch, gbc);
 
         // ---- 文件勾选树（按包路径分组） ----
-        gbc.gridx = 0; gbc.gridy = 6; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 2;
         gbc.weightx = 1.0; gbc.weighty = 1.0;
         gbc.fill = GridBagConstraints.BOTH;
         // 空树根节点，后续 fetchFiles 时填充
@@ -208,7 +228,7 @@ public class DeployDialog extends DialogWrapper {
         panel.add(scrollPane, gbc);
 
         // ---- 全选 / 排除模式 / 编辑配置 ----
-        gbc.gridy = 7; gbc.weighty = 0;
+        gbc.gridy = 5; gbc.weighty = 0;
         gbc.fill = GridBagConstraints.HORIZONTAL;
         JPanel optPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
         cbSelectAll = new JCheckBox("全选");
@@ -226,22 +246,70 @@ public class DeployDialog extends DialogWrapper {
         panel.add(optPanel, gbc);
 
         // ---- 配置文件路径提示 ----
-        gbc.gridy = 8;
+        gbc.gridy = 6;
         JBLabel configPathLabel = new JBLabel("配置: " + service.getConfigPath());
         configPathLabel.setFont(configPathLabel.getFont().deriveFont(11f));
         configPathLabel.setForeground(UIManager.getColor("Label.disabledForeground"));
         panel.add(configPathLabel, gbc);
 
+        // 初始状态：默认选中「本地修改」，隐藏 SVN 历史 UI
+        updateSvnHistoryVisibility();
+
         return panel;
+    }
+
+    /**
+     * 根据获取方式单选切换 SVN 历史 UI 的可见性。
+     * 选中「SVN 历史」时显示版本号输入框、获取按钮和记录表格；
+     * 选中「本地修改」时隐藏并清空已选版本号，避免遗留数据误用。
+     * <p>
+     * 切换后调用 pack() 重新计算对话框尺寸：显示时撑开避免表格被压缩，
+     * 隐藏时收缩避免留白。
+     */
+    private void updateSvnHistoryVisibility() {
+        boolean svnMode = rbSvnHistory.isSelected();
+        svnHistoryPanel.setVisible(svnMode);
+        if (!svnMode) {
+            // 切回本地修改时清空已选版本号和表格，重置分页状态
+            tfRevisions.setText("");
+            tableModel.setRowCount(0);
+            currentLimit = 0;
+            btnLoadMore.setEnabled(false);
+        }
+        // 重新布局并重新 pack 对话框，确保高度自适应
+        svnHistoryPanel.revalidate();
+        pack();
     }
 
     /**
      * 加载最近 5 条 SVN 提交记录到表格（首页）。
      * <p>
-     * 后台线程执行 svn log（避免阻塞 EDT），完成后用 SwingUtilities.invokeLater 切回 EDT 更新表格。
+     * 后台线程执行 svn log -l 5（避免阻塞 EDT），完成后切回 EDT 更新表格。
      * 加载成功后启用「加载更多」按钮；失败时在表格内显示错误信息。
      */
     private void loadRecentRevisions() {
+        currentLimit = 5;
+        loadRevisionsInternal();
+    }
+
+    /**
+     * 加载更多：limit 在当前基础上 +5 重新查询，清空表格后重新加载全部记录。
+     * <p>
+     * 例如首页 svn log -l 5，加载更多执行 svn log -l 10，清空表格后填入 10 条。
+     */
+    private void loadMoreRevisions() {
+        currentLimit += 5;
+        loadRevisionsInternal();
+    }
+
+    /**
+     * 实际执行 svn log -l currentLimit 并用结果重建表格。
+     * <p>
+     * 后台线程执行（避免阻塞 EDT），完成后切回 EDT 更新表格。
+     * 返回条数少于 currentLimit 说明已到最早版本，禁用「加载更多」。
+     */
+    private void loadRevisionsInternal() {
+        final int limit = currentLimit;
         // 临时禁用并显示加载提示
         tableRecentRevisions.setEnabled(false);
         btnLoadMore.setEnabled(false);
@@ -252,7 +320,7 @@ public class DeployDialog extends DialogWrapper {
         new Thread(() -> {
             List<DeployService.SvnLogEntry> logs;
             try {
-                logs = service.getRecentSvnLogs(5);
+                logs = service.getRecentSvnLogs(limit);
             } catch (Exception ex) {
                 SwingUtilities.invokeLater(() -> {
                     tableModel.setRowCount(0);
@@ -270,86 +338,20 @@ public class DeployDialog extends DialogWrapper {
                     tableRecentRevisions.setEnabled(false);
                     btnLoadMore.setEnabled(false);
                 } else {
-                    appendLogRows(finalLogs);
+                    for (DeployService.SvnLogEntry entry : finalLogs) {
+                        tableModel.addRow(new Object[]{
+                                false,
+                                entry.getRevision(),
+                                entry.getAuthor(),
+                                entry.getMessage()
+                        });
+                    }
                     tableRecentRevisions.setEnabled(true);
-                    // 不足 5 条说明已到最早版本，禁用「加载更多」
-                    btnLoadMore.setEnabled(finalLogs.size() >= 5);
+                    // 返回条数少于 limit 说明已到最早版本，禁用「加载更多」
+                    btnLoadMore.setEnabled(finalLogs.size() >= limit);
                 }
             });
         }, "svn-log-loader").start();
-    }
-
-    /**
-     * 加载更多：以当前已加载的最旧版本号往前翻页 5 条。
-     * <p>
-     * 用 {@link DeployService#getRecentSvnLogs(int, String)} 的分页重载，
-     * 传入 oldestLoadedRevision - 1 作为起始版本号，查 startRev:1 范围的前 5 条。
-     */
-    private void loadMoreRevisions() {
-        if (oldestLoadedRevision <= 1) {
-            btnLoadMore.setEnabled(false);
-            return;
-        }
-        String startRev = String.valueOf(oldestLoadedRevision - 1);
-        btnLoadMore.setEnabled(false);
-        btnLoadMore.setText("加载中...");
-
-        new Thread(() -> {
-            List<DeployService.SvnLogEntry> logs;
-            try {
-                logs = service.getRecentSvnLogs(5, startRev);
-            } catch (Exception ex) {
-                SwingUtilities.invokeLater(() -> {
-                    btnLoadMore.setText("加载更多");
-                    btnLoadMore.setEnabled(true);
-                    Messages.showWarningDialog(project, "加载更多失败: " + ex.getMessage(), "提示");
-                });
-                return;
-            }
-            final List<DeployService.SvnLogEntry> finalLogs = logs;
-            SwingUtilities.invokeLater(() -> {
-                btnLoadMore.setText("加载更多");
-                if (finalLogs.isEmpty()) {
-                    // 已到最早版本，无更多记录
-                    btnLoadMore.setEnabled(false);
-                } else {
-                    appendLogRows(finalLogs);
-                    // 不足 5 条说明已到最早版本
-                    btnLoadMore.setEnabled(finalLogs.size() >= 5);
-                }
-            });
-        }, "svn-log-more-loader").start();
-    }
-
-    /**
-     * 把新加载的提交记录追加到表格，并更新 oldestLoadedRevision。
-     * 注意：追加时暂停 TableModelListener，避免每行触发版本号同步。
-     */
-    private void appendLogRows(List<DeployService.SvnLogEntry> logs) {
-        for (DeployService.SvnLogEntry entry : logs) {
-            tableModel.addRow(new Object[]{
-                    false,
-                    entry.getRevision(),
-                    entry.getAuthor(),
-                    entry.getMessage()
-            });
-            // 更新最旧版本号
-            int revNum = parseRevisionNumber(entry.getRevision());
-            if (revNum > 0 && (oldestLoadedRevision == 0 || revNum < oldestLoadedRevision)) {
-                oldestLoadedRevision = revNum;
-            }
-        }
-    }
-
-    /** 从 "r1854" 格式解析出版本号数字 1854；解析失败返回 0 */
-    private static int parseRevisionNumber(String revision) {
-        if (revision == null) return 0;
-        String num = revision.startsWith("r") ? revision.substring(1) : revision;
-        try {
-            return Integer.parseInt(num.trim());
-        } catch (NumberFormatException e) {
-            return 0;
-        }
     }
 
     /** 把表格中所有勾选行的版本号用逗号拼接，同步到版本号输入框 */
