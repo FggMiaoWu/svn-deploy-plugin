@@ -11,6 +11,7 @@ import com.intellij.ui.CheckedTreeNode;
 import com.intellij.ui.SimpleTextAttributes;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBScrollPane;
+import com.intellij.openapi.wm.WindowManager;
 import org.jetbrains.annotations.Nullable;
 
 import javax.swing.*;
@@ -528,14 +529,54 @@ public class DeployDialog extends DialogWrapper {
             List<DFile> selected = service.selectFiles(modifiedFiles, req);
             DeployService.DeployResult result = service.deploy(selected, req);
             String envName = "1".equals(req.getEnvironment()) ? "测试环境" : "生产环境";
-            Messages.showInfoMessage(project,
-                    String.format("部署完成（%s）\n成功: %d\n失败: %d\n\n部署目录: %s",
-                            envName, result.successCount, result.failCount, service.getDeployDir()),
-                    "部署结果");
+            showDeployResult(envName, result);
         } catch (Exception e) {
             Messages.showErrorDialog(project, "部署失败: " + e.getMessage(), "错误");
         }
         super.doOKAction();
+    }
+
+    /**
+     * 展示部署结果：成功/失败数、部署目录、源文件清单、结果文件清单及分类统计。
+     * 用带滚动条的文本区展示，支持长清单。
+     */
+    private void showDeployResult(String envName, DeployService.DeployResult result) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("部署完成（").append(envName).append("）\n");
+        sb.append("成功: ").append(result.successCount)
+          .append("  失败: ").append(result.failCount).append("\n\n");
+        sb.append("部署目录: ").append(service.getDeployDir()).append("\n\n");
+
+        // 总统计行（java/class 来自源与结果，jsp/xml 源与结果一致只计源）
+        sb.append("统计: ");
+        List<String> stats = new ArrayList<>();
+        if (result.sourceJavaCount > 0) stats.add(result.sourceJavaCount + "个java文件");
+        if (result.resultClassCount > 0) stats.add(result.resultClassCount + "个class文件");
+        if (result.sourceJspCount > 0) stats.add(result.sourceJspCount + "个jsp文件");
+        if (result.sourceXmlCount > 0) stats.add(result.sourceXmlCount + "个xml文件");
+        sb.append(String.join("，", stats)).append("\n\n");
+
+        // 源文件清单
+        sb.append("===== 源文件清单 (共 ").append(result.sourceFileNames.size()).append(" 个) =====\n");
+        for (String name : result.sourceFileNames) {
+            sb.append(name).append("\n");
+        }
+
+        // 结果文件清单
+        sb.append("\n===== 结果文件清单 (共 ").append(result.resultFileNames.size()).append(" 个) =====\n");
+        for (String name : result.resultFileNames) {
+            sb.append(name).append("\n");
+        }
+
+        // 用带滚动条的文本区展示，避免清单过长超出屏幕
+        JTextArea textArea = new JTextArea(sb.toString());
+        textArea.setEditable(false);
+        textArea.setFont(textArea.getFont().deriveFont(13f));
+        JBScrollPane scrollPane = new JBScrollPane(textArea);
+        scrollPane.setPreferredSize(new Dimension(600, 400));
+        // 用 IDEA 主窗口作为父组件，确保对话框显示在 IDEA 之上
+        java.awt.Component parent = WindowManager.getInstance().getFrame(project);
+        JOptionPane.showMessageDialog(parent, scrollPane, "部署结果", JOptionPane.INFORMATION_MESSAGE);
     }
 
     /**

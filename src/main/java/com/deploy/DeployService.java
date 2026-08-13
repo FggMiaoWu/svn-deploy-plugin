@@ -314,6 +314,18 @@ public class DeployService {
         public int successCount;
         public int failCount;
         public List<DFile> deployFiles = new ArrayList<>();
+        // 源文件清单（文件名，含扩展名）
+        public List<String> sourceFileNames = new ArrayList<>();
+        // 结果文件清单（文件名，含扩展名，含内部类）
+        public List<String> resultFileNames = new ArrayList<>();
+        // 源文件分类统计
+        public int sourceJavaCount;
+        public int sourceJspCount;
+        public int sourceXmlCount;
+        // 结果文件分类统计
+        public int resultClassCount;
+        public int resultJspCount;
+        public int resultXmlCount;
     }
 
     /**
@@ -335,11 +347,31 @@ public class DeployService {
                 copyFileToDir(dFile.getSourcePath(), functionSourceDir);
                 copyFileToDir(dFile.getCompilePath(), functionCompileDir);
 
+                // 收集源文件清单与统计
+                String srcName = getFileNameWithExtension(dFile.getSourcePath());
+                result.sourceFileNames.add(srcName);
+                String srcType = dFile.getSourceFileType();
+                if ("java".equalsIgnoreCase(srcType)) result.sourceJavaCount++;
+                else if ("jsp".equalsIgnoreCase(srcType)) result.sourceJspCount++;
+                else if ("xml".equalsIgnoreCase(srcType)) result.sourceXmlCount++;
+
+                // 收集结果文件清单与统计（主编译产物）
+                String cmpName = getFileNameWithExtension(dFile.getCompilePath());
+                result.resultFileNames.add(cmpName);
+                String cmpType = dFile.getCompileFileType();
+                if ("class".equalsIgnoreCase(cmpType)) result.resultClassCount++;
+                else if ("jsp".equalsIgnoreCase(cmpType)) result.resultJspCount++;
+                else if ("xml".equalsIgnoreCase(cmpType)) result.resultXmlCount++;
+
                 List<DFile> innerClassFiles = dFile.getInnerClassFiles();
                 if (innerClassFiles != null) {
                     for (DFile innerFile : innerClassFiles) {
                         copyFileToDir(innerFile.getCompilePath(), deployDir);
                         copyFileToDir(innerFile.getCompilePath(), functionCompileDir);
+                        // 收集内部类结果文件清单与统计
+                        String innerName = getFileNameWithExtension(innerFile.getCompilePath());
+                        result.resultFileNames.add(innerName);
+                        result.resultClassCount++;
                     }
                 }
 
