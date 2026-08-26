@@ -3,6 +3,8 @@ package com.deploy;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 /**
  * 部署核心服务（从原 SvnDeployTool 复制纯逻辑并参数化，去除所有 System.in 交互）。
@@ -120,7 +122,7 @@ public class DeployService {
     /**
      * 获取最近 N 条 SVN 提交记录（用于版本号下拉框提示）。
      * <p>
-     * 执行 {@code svn log -l N}，分页由调用方递增 limit 实现（首页 limit=5，
+     * 执行 {@code svn log -r HEAD:1 -l N}，分页由调用方递增 limit 实现（首页 limit=5，
      * 加载更多 limit=10、15...），UI 层对返回结果去重追加。
      * <p>
      * 工作目录优先用 srcDir，srcDir 为空或不存在时回退到 projectRoot。
@@ -139,7 +141,7 @@ public class DeployService {
     }
 
     /**
-     * 实际执行 svn log -l limit 并解析结果。
+     * 实际执行 svn log -r HEAD:1 -l limit 并解析结果。
      *
      * @param workDir svn log 执行的工作目录
      * @param limit   最多获取多少条
@@ -152,6 +154,11 @@ public class DeployService {
             List<String> cmd = new ArrayList<>();
             cmd.add(SVN_EXECUTABLE);
             cmd.add("log");
+            // 显式指定 HEAD:1 范围，从仓库最新版本向前查询，
+            // 否则 svn log 默认从本地工作副本 BASE revision 开始，
+            // 本地未 svn update 时会漏掉仓库最新提交
+            cmd.add("-r");
+            cmd.add("HEAD:1");
             cmd.add("-l");
             cmd.add(String.valueOf(limit));
             ProcessBuilder pb = new ProcessBuilder(cmd);
@@ -326,6 +333,8 @@ public class DeployService {
         public int resultClassCount;
         public int resultJspCount;
         public int resultXmlCount;
+        // 部署目录压缩包绝对路径（部署目录上一级，与部署目录同名 + .zip）
+        public String zipPath;
     }
 
     /**
@@ -386,6 +395,8 @@ public class DeployService {
         if (!result.deployFiles.isEmpty()) {
             generateDeployScript(result.deployFiles);
             generateCopyScript(result.deployFiles);
+            // 部署完成后自动压缩部署目录，生成在上一级目录，与部署目录同名 + .zip
+            result.zipPath = zipDeployDir();
         }
         return result;
     }
@@ -825,6 +836,61 @@ public class DeployService {
         dir = new File(functionBackupDir);
         if (dir.exists()) clearDirectory(dir);
         dir.mkdirs();
+    }
+
+    /**
+     * 把部署目录打包成 zip，放在部署目录的上一级，文件名与部署目录同名 + .zip。
+     * 例如 deployDir=/path/A_compoes/localfile → 生成 /path/A_compoes/localfile.zip
+     * 部署目录每次部署前会清空重建，压缩包放在上一级避免被自身包含；
+     * 若已存在同名压缩包则覆盖。
+     *
+     * @return 压缩包绝对路径
+     */
+    private String zipDeployDir() {
+        File deployDirFile = new File(deployDir);
+        String dirName = deployDirFile.getName();
+        File zipFile = new File(deployDirFile.getParentFile(), dirName + ".zip");
+
+        try (FileOutputStream fos = new FileOutputStream(zipFile);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            File[] files = deployDirFile.listFiles();
+            if (files != null) {
+                for (File file : files) {
+                    addToZip(file, file.getName(), zos);
+                }
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("压缩部署目录失败: " + e.getMessage(), e);
+        }
+        return zipFile.getAbsolutePath();
+    }
+
+    /**
+     * 递归把文件/目录加入 zip 输出流。
+     *
+     * @param file       待加入的文件或目录
+     * @param entryName  zip 内条目名称（相对路径）
+     * @param zos        zip 输出流
+     */
+    private void addToZip(File file, String entryName, ZipOutputStream zos) throws IOException {
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    addToZip(child, entryName + "/" + child.getName(), zos);
+                }
+            }
+        } else {
+            zos.putNextEntry(new ZipEntry(entryName));
+            try (FileInputStream fis = new FileInputStream(file)) {
+                byte[] buffer = new byte[1024];
+                int len;
+                while ((len = fis.read(buffer)) > 0) {
+                    zos.write(buffer, 0, len);
+                }
+            }
+            zos.closeEntry();
+        }
     }
 
     // ===================== 路径工具 =====================

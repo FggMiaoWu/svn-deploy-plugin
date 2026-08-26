@@ -545,7 +545,11 @@ public class DeployDialog extends DialogWrapper {
         sb.append("部署完成（").append(envName).append("）\n");
         sb.append("成功: ").append(result.successCount)
           .append("  失败: ").append(result.failCount).append("\n\n");
-        sb.append("部署目录: ").append(service.getDeployDir()).append("\n\n");
+        sb.append("部署目录: ").append(service.getDeployDir()).append("\n");
+        if (result.zipPath != null && !result.zipPath.isEmpty()) {
+            sb.append("压缩包: ").append(result.zipPath).append("\n");
+        }
+        sb.append("\n");
 
         // 总统计行（java/class 来自源与结果，jsp/xml 源与结果一致只计源）
         sb.append("统计: ");
