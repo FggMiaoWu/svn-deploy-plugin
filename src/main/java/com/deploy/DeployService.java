@@ -3,8 +3,6 @@ package com.deploy;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 
 /**
  * 部署核心服务（从原 SvnDeployTool 复制纯逻辑并参数化，去除所有 System.in 交互）。
@@ -79,6 +77,7 @@ public class DeployService {
     private String productionDir;
     private String deployScript;
     private String copyScript;
+    private String rollbackScript;
     private List<String> ignoreFiles;
     private List<String> srcIgnorePrefixes;
     private String selectedEnvironment;
@@ -333,8 +332,6 @@ public class DeployService {
         public int resultClassCount;
         public int resultJspCount;
         public int resultXmlCount;
-        // 部署目录压缩包绝对路径（部署目录上一级，与部署目录同名 + .zip）
-        public String zipPath;
     }
 
     /**
@@ -350,8 +347,17 @@ public class DeployService {
 
         mkdirsFunction();
 
+        // 按 compilePath 去重，避免同一编译产物被重复部署（导致 deploy.sh 重复命令、统计虚高）
+        Set<String> seenCompilePaths = new HashSet<>();
+
         for (DFile dFile : selectedFiles) {
             try {
+                // 主文件去重：同一编译产物只处理一次
+                if (dFile.getCompilePath() == null
+                        || !seenCompilePaths.add(dFile.getCompilePath())) {
+                    continue;
+                }
+
                 copyFileToDir(dFile.getCompilePath(), deployDir);
                 copyFileToDir(dFile.getSourcePath(), functionSourceDir);
                 copyFileToDir(dFile.getCompilePath(), functionCompileDir);
@@ -375,6 +381,11 @@ public class DeployService {
                 List<DFile> innerClassFiles = dFile.getInnerClassFiles();
                 if (innerClassFiles != null) {
                     for (DFile innerFile : innerClassFiles) {
+                        // 内部类去重：跳过与主文件或其他内部类 compilePath 重复的条目
+                        if (innerFile.getCompilePath() == null
+                                || !seenCompilePaths.add(innerFile.getCompilePath())) {
+                            continue;
+                        }
                         copyFileToDir(innerFile.getCompilePath(), deployDir);
                         copyFileToDir(innerFile.getCompilePath(), functionCompileDir);
                         // 收集内部类结果文件清单与统计
@@ -395,8 +406,7 @@ public class DeployService {
         if (!result.deployFiles.isEmpty()) {
             generateDeployScript(result.deployFiles);
             generateCopyScript(result.deployFiles);
-            // 部署完成后自动压缩部署目录，生成在上一级目录，与部署目录同名 + .zip
-            result.zipPath = zipDeployDir();
+            generateRollbackScript(result.deployFiles);
         }
         return result;
     }
@@ -453,6 +463,7 @@ public class DeployService {
             productionDir = config.getProperty("production.dir", "");
             deployScript = deployDir + File.separator + "deploy.sh";
             copyScript = deployDir + File.separator + "copy.sh";
+            rollbackScript = deployDir + File.separator + "rollback.sh";
 
             File deployDirFile = new File(deployDir);
             if (deployDirFile.exists()) {
@@ -838,61 +849,6 @@ public class DeployService {
         dir.mkdirs();
     }
 
-    /**
-     * 把部署目录打包成 zip，放在部署目录的上一级，文件名与部署目录同名 + .zip。
-     * 例如 deployDir=/path/A_compoes/localfile → 生成 /path/A_compoes/localfile.zip
-     * 部署目录每次部署前会清空重建，压缩包放在上一级避免被自身包含；
-     * 若已存在同名压缩包则覆盖。
-     *
-     * @return 压缩包绝对路径
-     */
-    private String zipDeployDir() {
-        File deployDirFile = new File(deployDir);
-        String dirName = deployDirFile.getName();
-        File zipFile = new File(deployDirFile.getParentFile(), dirName + ".zip");
-
-        try (FileOutputStream fos = new FileOutputStream(zipFile);
-             ZipOutputStream zos = new ZipOutputStream(fos)) {
-            File[] files = deployDirFile.listFiles();
-            if (files != null) {
-                for (File file : files) {
-                    addToZip(file, file.getName(), zos);
-                }
-            }
-        } catch (IOException e) {
-            throw new RuntimeException("压缩部署目录失败: " + e.getMessage(), e);
-        }
-        return zipFile.getAbsolutePath();
-    }
-
-    /**
-     * 递归把文件/目录加入 zip 输出流。
-     *
-     * @param file       待加入的文件或目录
-     * @param entryName  zip 内条目名称（相对路径）
-     * @param zos        zip 输出流
-     */
-    private void addToZip(File file, String entryName, ZipOutputStream zos) throws IOException {
-        if (file.isDirectory()) {
-            File[] children = file.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    addToZip(child, entryName + "/" + child.getName(), zos);
-                }
-            }
-        } else {
-            zos.putNextEntry(new ZipEntry(entryName));
-            try (FileInputStream fis = new FileInputStream(file)) {
-                byte[] buffer = new byte[1024];
-                int len;
-                while ((len = fis.read(buffer)) > 0) {
-                    zos.write(buffer, 0, len);
-                }
-            }
-            zos.closeEntry();
-        }
-    }
-
     // ===================== 路径工具 =====================
 
     private String normalizePath(String path) {
@@ -981,11 +937,21 @@ public class DeployService {
             sb.append("echo \"  目标目录: $TARGET_DIR\"\n");
             sb.append("echo \"========================================\"\n\n");
 
+            // 按 webTargetPath 去重输出，避免同一目标文件被生成重复部署块
+            Set<String> emittedTargets = new HashSet<>();
             for (DFile dFile : deployFiles) {
+                if (dFile.getWebTargetPath() == null
+                        || !emittedTargets.add(dFile.getWebTargetPath())) {
+                    continue;
+                }
                 appendDeployBlock(sb, dFile);
                 List<DFile> innerClassFiles = dFile.getInnerClassFiles();
                 if (innerClassFiles != null) {
                     for (DFile innerFile : innerClassFiles) {
+                        if (innerFile.getWebTargetPath() == null
+                                || !emittedTargets.add(innerFile.getWebTargetPath())) {
+                            continue;
+                        }
                         appendDeployBlock(sb, innerFile);
                     }
                 }
@@ -1041,11 +1007,21 @@ public class DeployService {
             sb.append("    mkdir -p ").append(localDir).append("\n");
             sb.append("fi\n");
 
+            // 按 webTargetPath 去重输出，避免同一目标文件被生成重复复制块
+            Set<String> emittedTargets = new HashSet<>();
             for (DFile dFile : deployFiles) {
+                if (dFile.getWebTargetPath() == null
+                        || !emittedTargets.add(dFile.getWebTargetPath())) {
+                    continue;
+                }
                 appendCopyBlock(sb, dFile, localDir);
                 List<DFile> innerClassFiles = dFile.getInnerClassFiles();
                 if (innerClassFiles != null) {
                     for (DFile innerFile : innerClassFiles) {
+                        if (innerFile.getWebTargetPath() == null
+                                || !emittedTargets.add(innerFile.getWebTargetPath())) {
+                            continue;
+                        }
                         appendCopyBlock(sb, innerFile, localDir);
                     }
                 }
@@ -1074,6 +1050,133 @@ public class DeployService {
         sb.append("else\n");
         sb.append("    echo '文件不存在: ").append(fileName).append("'\n");
         sb.append("fi\n\n");
+    }
+
+    /**
+     * 生成回滚脚本 rollback.sh。
+     * <p>
+     * 与 deploy.sh 一一对应：deploy.sh 在部署前用 cp 把目标文件备份成
+     * {@code ${target}_bak_${时间戳}}，rollback.sh 据此恢复。
+     * 支持两种模式：
+     * <ul>
+     *   <li>指定时间戳：{@code bash rollback.sh 20260827173350}</li>
+     *   <li>自动查找最新备份：{@code bash rollback.sh}</li>
+     * </ul>
+     * 无备份的文件视为新文件部署，回退时直接删除。
+     * <p>
+     * 文件列表按 webTargetPath 去重输出，与 deploy.sh 保持一致。
+     */
+    private void generateRollbackScript(List<DFile> deployFiles) {
+        try (FileOutputStream fos = new FileOutputStream(rollbackScript)) {
+            String targetDir = "1".equals(selectedEnvironment) ? testDir : productionDir;
+            String envName = "1".equals(selectedEnvironment) ? "测试环境" : "生产环境";
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("#!/bin/bash\n");
+            sb.append("# 回退脚本: ").append(envName).append("\n");
+            sb.append("# 对应 deploy.sh 的回退操作\n");
+            sb.append("# 用法: 在 deploy.sh 同目录下执行 bash rollback.sh\n");
+            sb.append("#   或指定备份时间戳: bash rollback.sh 20260827173350\n\n");
+            sb.append("TARGET_DIR=\"").append(targetDir).append("\"\n\n");
+            sb.append("# 如果传入时间戳参数，使用指定时间戳；否则自动查找最新的备份文件\n");
+            sb.append("BACKUP_TS=\"$1\"\n\n");
+            sb.append("echo \"========================================\"\n");
+            sb.append("echo \"  回退: ").append(envName).append("\"\n");
+            sb.append("echo \"  目标目录: $TARGET_DIR\"\n");
+            sb.append("if [ -n \"$BACKUP_TS\" ]; then\n");
+            sb.append("    echo \"  指定备份时间戳: $BACKUP_TS\"\n");
+            sb.append("else\n");
+            sb.append("    echo \"  自动查找最新备份\"\n");
+            sb.append("fi\n");
+            sb.append("echo \"========================================\"\n\n");
+
+            // 回退函数：查找备份文件并恢复，找不到备份则删除（新文件部署的情况）
+            sb.append("rollback_file() {\n");
+            sb.append("    local target_path=\"$1\"\n");
+            sb.append("    local file_name\n");
+            sb.append("    file_name=$(basename \"$target_path\")\n\n");
+            sb.append("    if [ -n \"$BACKUP_TS\" ]; then\n");
+            sb.append("        # 指定时间戳模式\n");
+            sb.append("        local backup_path=\"${target_path}_bak_${BACKUP_TS}\"\n");
+            sb.append("        if [ -f \"$backup_path\" ]; then\n");
+            sb.append("            echo \"回退文件(指定备份): $file_name\"\n");
+            sb.append("            cp \"$backup_path\" \"$target_path\"\n");
+            sb.append("            if [ $? -eq 0 ]; then\n");
+            sb.append("                echo \"  -> 回退成功\"\n");
+            sb.append("            else\n");
+            sb.append("                echo \"  -> 回退失败!\"\n");
+            sb.append("            fi\n");
+            sb.append("        else\n");
+            sb.append("            echo \"警告: 备份文件不存在: $file_name (可能是新文件部署)\"\n");
+            sb.append("            echo \"  -> 删除新部署的文件\"\n");
+            sb.append("            rm -f \"$target_path\"\n");
+            sb.append("        fi\n");
+            sb.append("    else\n");
+            sb.append("        # 自动查找最新备份模式\n");
+            sb.append("        local backup_path\n");
+            sb.append("        backup_path=$(ls -t \"${target_path}_bak_\"* 2>/dev/null | head -1)\n");
+            sb.append("        if [ -n \"$backup_path\" ]; then\n");
+            sb.append("            echo \"回退文件(自动备份): $file_name <- $(basename \"$backup_path\")\"\n");
+            sb.append("            cp \"$backup_path\" \"$target_path\"\n");
+            sb.append("            if [ $? -eq 0 ]; then\n");
+            sb.append("                echo \"  -> 回退成功\"\n");
+            sb.append("            else\n");
+            sb.append("                echo \"  -> 回退失败!\"\n");
+            sb.append("            fi\n");
+            sb.append("        else\n");
+            sb.append("            echo \"警告: 无备份文件: $file_name (可能是新文件部署)\"\n");
+            sb.append("            echo \"  -> 删除新部署的文件\"\n");
+            sb.append("            rm -f \"$target_path\"\n");
+            sb.append("        fi\n");
+            sb.append("    fi\n");
+            sb.append("}\n\n");
+
+            // 文件清单，按 webTargetPath 去重，与 deploy.sh 输出保持一致
+            Set<String> emittedTargets = new HashSet<>();
+            int index = 0;
+            for (DFile dFile : deployFiles) {
+                if (dFile.getWebTargetPath() == null
+                        || !emittedTargets.add(dFile.getWebTargetPath())) {
+                    continue;
+                }
+                appendRollbackEntry(sb, ++index, dFile);
+                List<DFile> innerClassFiles = dFile.getInnerClassFiles();
+                if (innerClassFiles != null) {
+                    for (DFile innerFile : innerClassFiles) {
+                        if (innerFile.getWebTargetPath() == null
+                                || !emittedTargets.add(innerFile.getWebTargetPath())) {
+                            continue;
+                        }
+                        appendRollbackEntry(sb, ++index, innerFile);
+                    }
+                }
+            }
+
+            sb.append("\necho \"========================================\"\n");
+            sb.append("echo \"回退完成!\"\n");
+            sb.append("echo \"========================================\"\n");
+
+            String content = sb.toString();
+            if (!content.endsWith("\n")) content += "\n";
+            fos.write(content.getBytes("UTF-8"));
+        } catch (Exception e) {
+            throw new RuntimeException("生成回滚脚本失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 追加单条回滚条目：注释行 + rollback_file 调用。
+     * <p>
+     * 路径中的 {@code $}（内部类名如 {@code Foo$1.class}）必须转义为 {@code \$}，
+     * 否则双引号内 {@code $1} 会被 Bash 当作脚本第一个参数展开。
+     */
+    private void appendRollbackEntry(StringBuilder sb, int index, DFile dFile) {
+        String productionPath = dFile.getWebTargetPath();
+        String fileName = getFileNameWithExtension(dFile.getCompilePath());
+        // 转义 $ 为 \$，避免双引号内 $N 被解释为位置参数
+        String escapedPath = productionPath.replace("$", "\\$");
+        sb.append("# ===== ").append(index).append(". ").append(fileName).append(" =====\n");
+        sb.append("rollback_file \"").append(escapedPath).append("\"\n\n");
     }
 
     // ===================== Getter（供 Dialog 展示） =====================
