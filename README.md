@@ -11,6 +11,8 @@
 - **多项目独立配置**：每个项目使用 `{项目根}/svn-deploy/deploy.properties` 独立配置，首次使用自动从模板创建
 - **一键编辑配置**：对话框内「编辑配置」按钮直接在 IDEA 编辑器中打开配置文件
 - **部署脚本生成**：自动生成 `deploy.sh`（带备份+部署）和 `copy.sh`（带备份+打包）
+- **上线申请表自动生成**：部署后可选生成「上线申请表」`.docx`。功能名/上线内容描述/上线时间为界面手动填写（非必填），移交位置与文件清单自动生成（基于 Apache POI 填充内置模板）
+- **按需求目录归档**：勾选「生成上线申请表」时，源文件/编译文件/正式环境备份统一归档到「模板目录父级 / 上线时间(YYYY-MM-DD)+功能名称」需求目录下（内部结构同模板：`源文件/`、`上线发布文件/`、`正式环境文件备份(上线前)/`），申请表输出到 `相关文档/海口12345平台系统功能上线申请表.docx`；未勾选则不复制代码，发布仍走 `deployDir`
 
 ## 环境要求
 
@@ -134,6 +136,11 @@ cd svn-deploy-plugin
 | `function.compile.dir` | 功能模板-上线文件目录（本地路径） | `/Users/xxx/模板/上线发布文件` |
 | `function.backup.dir` | 功能模板-备份目录（本地路径） | `/Users/xxx/模板/正式环境文件备份` |
 | `svn.ignore.files` | SVN 忽略文件模式（分号分隔，支持 `**` 通配） | `**/*.tmp;**/*.log` |
+| `function.dir` | 模板基础目录：勾选生成申请表时按「上线时间(YYYY-MM-DD)+功能名称」在其父目录下新建需求目录（结构同模板）；未勾选或字段未填则不做归档 | `/Users/xxx/模板` |
+| `form.apply.unit` / `form.apply.contact` / `form.apply.phone` | 申请单位 / 联系人 / 联系电话 | `海口电信` / `蒙元纶` |
+| `form.dev.*` / `form.coop.*` | 开发单位 / 配合单位负责人信息 | |
+| `form.svn.base.dir` | SVN 集中升级发布文档根路径（后接 `/` + 需求目录名） | `svn://172.26.197.90:8000/.../2026升级发布文档` |
+| `form.output.dir` | 申请表输出目录（能构成需求目录时随即输出到需求目录根；仅无法构成时才用此项，回退用户主目录） | |
 
 > 提示：`deploy.properties` 可提交到 SVN 团队共享，新人检出项目后即用，无需重新配置。
 
@@ -149,11 +156,13 @@ svn-deploy-plugin/
     │   ├── DeployAction.java     ← 入口 Action（右键菜单触发）
     │   ├── DeployDialog.java     ← 图形界面（Swing + IntelliJ UI 组件）
     │   ├── DeployRequest.java    ← 参数化请求对象
-    │   ├── DeployService.java    ← 核心逻辑（SVN 调用 + 文件操作 + 脚本生成）
+    │   ├── DeployService.java    ← 核心逻辑（SVN 调用 + 文件操作 + 脚本生成 + 申请表生成）
+    │   ├── UploadFormGenerator.java ← 上线申请表模板填充（Apache POI）
     │   └── DFile.java            ← 文件数据类
     └── resources/
         ├── META-INF/plugin.xml   ← 插件描述 + Action 注册
-        └── deploy/default.properties  ← 内置默认配置模板
+        ├── deploy/default.properties  ← 内置默认配置模板
+        └── upload/上报申请模板.docx    ← 上线申请表内置模板
 ```
 
 ## 开发指南

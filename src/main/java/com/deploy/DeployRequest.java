@@ -31,6 +31,15 @@ public class DeployRequest {
     /** 自定义配置文件路径（可选，为空则用内置默认配置） */
     private String configPath;
 
+    /** 功能名称（界面填写，用于生成需求目录名与申请表；可为空） */
+    private String functionName;
+
+    /** 上线时间（界面填写，用于生成需求目录名与申请表；可为空） */
+    private String onlineTime;
+
+    /** 是否勾选「生成上线申请表」：勾选时才做需求目录归档（复制源/编译文件）与生成申请表 */
+    private boolean generateForm;
+
     public String getEnvironment() { return environment; }
     public void setEnvironment(String environment) { this.environment = environment; }
 
@@ -54,4 +63,13 @@ public class DeployRequest {
 
     public String getConfigPath() { return configPath; }
     public void setConfigPath(String configPath) { this.configPath = configPath; }
+
+    public String getFunctionName() { return functionName; }
+    public void setFunctionName(String functionName) { this.functionName = functionName; }
+
+    public String getOnlineTime() { return onlineTime; }
+    public void setOnlineTime(String onlineTime) { this.onlineTime = onlineTime; }
+
+    public boolean isGenerateForm() { return generateForm; }
+    public void setGenerateForm(boolean generateForm) { this.generateForm = generateForm; }
 }

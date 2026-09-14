@@ -65,6 +65,12 @@ public class DeployDialog extends DialogWrapper {
     // 排除模式
     private JCheckBox cbExcludeMode;
 
+    // 上线申请表：功能名/需求描述/上线时间手动填写（均非必填）+ 生成开关
+    private JTextField tfFunctionName;
+    private JTextField tfOnlineTime;
+    private JTextArea taRequirementDesc;
+    private JCheckBox cbGenForm;
+
     // 获取到的修改文件（保持顺序，用于回查索引）
     private List<DFile> modifiedFiles = new ArrayList<>();
 
@@ -228,8 +234,49 @@ public class DeployDialog extends DialogWrapper {
         scrollPane.setPreferredSize(new Dimension(600, 280));
         panel.add(scrollPane, gbc);
 
+        // ---- 上线申请表（可选，部署后用于生成上线单，均非必填） ----
+        gbc.gridx = 0; gbc.gridy = 5; gbc.weighty = 0;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        JPanel formPanel = new JPanel();
+        formPanel.setLayout(new BoxLayout(formPanel, BoxLayout.Y_AXIS));
+        formPanel.setBorder(BorderFactory.createTitledBorder("上线申请表（可选生成）"));
+
+        // 第一行：功能名称 + 上线时间 + 生成开关
+        JPanel line1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        line1.add(new JBLabel("功能名称:"));
+        tfFunctionName = new JTextField(22);
+        tfFunctionName.setToolTipText("上线申请表中的功能名称，留空则该格留空");
+        line1.add(tfFunctionName);
+        line1.add(Box.createHorizontalStrut(10));
+        line1.add(new JBLabel("上线时间:"));
+        tfOnlineTime = new JTextField(16);
+        // 默认预填当天 23:30（示例格式 YYYY.MM.DD HH:mm），可改，留空则申请表该格留空
+        tfOnlineTime.setText(new java.text.SimpleDateFormat("yyyy.MM.dd").format(new Date()) + " 23:30");
+        tfOnlineTime.setToolTipText("上线申请表中的上线时间，格式示例 2026.09.11 23:30，留空则不填");
+        line1.add(tfOnlineTime);
+        line1.add(Box.createHorizontalStrut(12));
+        cbGenForm = new JCheckBox("生成上线申请表", true);
+        cbGenForm.setToolTipText("取消勾选则不生成上线申请表（如发布测试环境）");
+        line1.add(cbGenForm);
+        formPanel.add(line1);
+
+        // 第二行：上线内容描述（多行文本域）
+        JPanel line2 = new JPanel(new BorderLayout(6, 0));
+        line2.add(new JBLabel("上线内容描述:"), BorderLayout.WEST);
+        taRequirementDesc = new JTextArea(4, 40);
+        taRequirementDesc.setLineWrap(true);
+        taRequirementDesc.setWrapStyleWord(true);
+        taRequirementDesc.setToolTipText("上线申请表中的上线内容描述，可多行，留空则留空");
+        JScrollPane descScroll = new JScrollPane(taRequirementDesc);
+        descScroll.setPreferredSize(new Dimension(600, 78));
+        line2.add(descScroll, BorderLayout.CENTER);
+        formPanel.add(Box.createVerticalStrut(6));
+        formPanel.add(line2);
+
+        panel.add(formPanel, gbc);
+
         // ---- 全选 / 排除模式 / 编辑配置 ----
-        gbc.gridy = 5; gbc.weighty = 0;
+        gbc.gridy = 6; gbc.weighty = 0;
         gbc.fill = GridBagConstraints.HORIZONTAL;
         JPanel optPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
         cbSelectAll = new JCheckBox("全选");
@@ -247,7 +294,7 @@ public class DeployDialog extends DialogWrapper {
         panel.add(optPanel, gbc);
 
         // ---- 配置文件路径提示 ----
-        gbc.gridy = 6;
+        gbc.gridy = 7;
         JBLabel configPathLabel = new JBLabel("配置: " + service.getConfigPath());
         configPathLabel.setFont(configPathLabel.getFont().deriveFont(11f));
         configPathLabel.setForeground(UIManager.getColor("Label.disabledForeground"));
@@ -524,12 +571,31 @@ public class DeployDialog extends DialogWrapper {
             req.setSelectedIndices(selectedIndices);
         }
 
+        // 注入上线申请表参数：决定是否生成申请表 & 是否做需求目录归档
+        req.setFunctionName(tfFunctionName != null ? tfFunctionName.getText() : null);
+        req.setOnlineTime(tfOnlineTime != null ? tfOnlineTime.getText() : null);
+        req.setGenerateForm(cbGenForm != null && cbGenForm.isSelected());
+
         // 执行部署
         try {
             List<DFile> selected = service.selectFiles(modifiedFiles, req);
             DeployService.DeployResult result = service.deploy(selected, req);
             String envName = "1".equals(req.getEnvironment()) ? "测试环境" : "生产环境";
-            showDeployResult(envName, result);
+
+            // 部署后生成上线申请表（可勾选关闭；功能名/描述/上线时间非必填）
+            String formPath = null;
+            if (cbGenForm != null && cbGenForm.isSelected() && service.isUploadFormEnabled()) {
+                try {
+                    formPath = service.generateUploadForm(result,
+                            tfFunctionName != null ? tfFunctionName.getText() : null,
+                            taRequirementDesc != null ? taRequirementDesc.getText() : null,
+                            tfOnlineTime != null ? tfOnlineTime.getText() : null);
+                } catch (Exception fe) {
+                    Messages.showWarningDialog(project, "生成上线申请表失败（不影响部署）：\n" + fe.getMessage(), "提示");
+                }
+            }
+
+            showDeployResult(envName, result, formPath);
         } catch (Exception e) {
             Messages.showErrorDialog(project, "部署失败: " + e.getMessage(), "错误");
         }
@@ -540,13 +606,18 @@ public class DeployDialog extends DialogWrapper {
      * 展示部署结果：成功/失败数、部署目录、源文件清单、结果文件清单及分类统计。
      * 用带滚动条的文本区展示，支持长清单。
      */
-    private void showDeployResult(String envName, DeployService.DeployResult result) {
+    private void showDeployResult(String envName, DeployService.DeployResult result, String formPath) {
         StringBuilder sb = new StringBuilder();
         sb.append("部署完成（").append(envName).append("）\n");
         sb.append("成功: ").append(result.successCount)
           .append("  失败: ").append(result.failCount).append("\n\n");
         sb.append("部署目录: ").append(service.getDeployDir()).append("\n");
         sb.append("生成脚本: deploy.sh / copy.sh / rollback.sh（回滚用法见 rollback.sh 头部）\n\n");
+
+        // 上线申请表生成路径
+        if (formPath != null) {
+            sb.append("已生成上线申请表: ").append(formPath).append("\n\n");
+        }
 
         // 总统计行（java/class 来自源与结果，jsp/xml 源与结果一致只计源）
         sb.append("统计: ");

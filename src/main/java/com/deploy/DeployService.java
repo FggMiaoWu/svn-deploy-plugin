@@ -86,6 +86,10 @@ public class DeployService {
     private String functionCompileDir;
     private String functionBackupDir;
 
+    // 上线申请表生成配置
+    private String functionDir;              // 当前需求目录（用于拼接需求目录与输出目录）
+    private String formOutputDir;
+
     /**
      * 构造服务：自动查找项目级配置 {projectRoot}/svn-deploy/deploy.properties。
      * 若不存在则从内置模板自动创建一份（configJustCreated 置 true，调用方可提示用户编辑）。
@@ -339,6 +343,15 @@ public class DeployService {
      */
     public DeployResult deploy(List<DFile> selectedFiles, DeployRequest req) {
         this.selectedEnvironment = req.getEnvironment();
+        // 仅当勾选了「生成上线申请表」时才做需求目录归档（复制源/编译文件）；
+        // 否则归档目录置空，不复制代码到任何归档目录（发布仍走 deployDir）。
+        if (req.isGenerateForm()) {
+            applyNeedDirectory(req);
+        } else {
+            this.functionSourceDir = null;
+            this.functionCompileDir = null;
+            this.functionBackupDir = null;
+        }
         DeployResult result = new DeployResult();
 
         if (selectedFiles == null || selectedFiles.isEmpty()) {
@@ -478,6 +491,11 @@ public class DeployService {
                     "/Users/Admin/work/需求文档/模板/上线发布文件");
             functionBackupDir = config.getProperty("function.backup.dir",
                     "/Users/Admin/work/需求文档/模板/正式环境文件备份(上线前)");
+
+            // 上线申请表生成配置
+            functionDir = config.getProperty("function.dir",
+                    "/Users/Admin/work/需求文档/模板");
+            formOutputDir = config.getProperty("form.output.dir", "");
 
             // 忽略文件
             String ignoreFilesStr = config.getProperty("svn.ignore.files", "");
@@ -815,6 +833,8 @@ public class DeployService {
     }
 
     private void copyFileToDir(String sourcePath, String targetDirPath) throws IOException {
+        // 未构成需求目录时 targetDirPath 为 null/空（不归档到 function 目录），跳过
+        if (targetDirPath == null || targetDirPath.trim().isEmpty()) return;
         File sourceFile = new File(sourcePath);
         String fileName = getFileNameWithExtension(sourcePath);
         File targetFile = new File(targetDirPath + File.separator + fileName);
@@ -835,16 +855,58 @@ public class DeployService {
         }
     }
 
+    /**
+     * 根据请求中的上线时间 + 功能名称设置本次部署的功能归档目录。
+     * 能构成需求目录时指向「模板目录父级 / 上线时间+功能名 / 子目录」；
+     * 无法构成（功能名与上线时间均未填）时置 null，表示不归档到 function 目录。
+     * 注：发布与回退仍走 deployDir（A_compoes/localfile）与 rollback.sh，不受影响。
+     */
+    private void applyNeedDirectory(DeployRequest req) {
+        String dirName = buildNeedDirName(req.getFunctionName(), req.getOnlineTime());
+        if (dirName == null) {
+            this.functionSourceDir = null;
+            this.functionCompileDir = null;
+            this.functionBackupDir = null;
+            return;
+        }
+        File parent = new File(functionDir).getParentFile();
+        String root = (parent == null) ? dirName : new File(parent, dirName).getPath();
+        this.functionSourceDir = root + File.separator + "源文件";
+        this.functionCompileDir = root + File.separator + "上线发布文件";
+        this.functionBackupDir = root + File.separator + "正式环境文件备份(上线前)";
+    }
+
+    /**
+     * 需求目录名 = 「上线时间日期(YYYY-MM-DD) + 功能名称」。
+     * 上线时间与功能名均未填时返回 null（由调用方回退）。
+     */
+    private String buildNeedDirName(String functionName, String onlineTime) {
+        String date = extractDatePart(onlineTime);
+        String name = trimToNull(functionName);
+        if (date.isEmpty() && name == null) return null;
+        return date + (name == null ? "" : name);
+    }
+
+    /** 从上线时间中提取日期部分，各分隔符统一为短横，如 "2026.09.10 23:30" → "2026-09-10" */
+    private String extractDatePart(String onlineTime) {
+        if (onlineTime == null) return "";
+        String s = onlineTime.trim();
+        if (s.isEmpty()) return "";
+        int sp = s.indexOf(' ');
+        if (sp >= 0) s = s.substring(0, sp).trim();
+        return s.replace(".", "-").replace("/", "-").trim();
+    }
+
     private void mkdirsFunction() {
-        File dir = new File(functionSourceDir);
-        if (dir.exists()) clearDirectory(dir);
-        dir.mkdirs();
+        mkdirClean(functionSourceDir);
+        mkdirClean(functionCompileDir);
+        mkdirClean(functionBackupDir);
+    }
 
-        dir = new File(functionCompileDir);
-        if (dir.exists()) clearDirectory(dir);
-        dir.mkdirs();
-
-        dir = new File(functionBackupDir);
+    /** 创建归档目录；未构成需求目录时 dirPath 为 null/空则跳过 */
+    private void mkdirClean(String dirPath) {
+        if (dirPath == null || dirPath.trim().isEmpty()) return;
+        File dir = new File(dirPath);
         if (dir.exists()) clearDirectory(dir);
         dir.mkdirs();
     }
@@ -1183,4 +1245,87 @@ public class DeployService {
 
     public String getSrcDir() { return srcDir; }
     public String getDeployDir() { return deployDir; }
+
+    // ===================== 上线申请表生成 =====================
+
+    /**
+     * 上线申请表生成功能总可用（功能名/描述/上线时间由界面手动填写，均为非必填）。
+     */
+    public boolean isUploadFormEnabled() {
+        return true;
+    }
+
+    /**
+     * 基于部署结果生成上线申请表 docx，返回生成文件的绝对路径。
+     *
+     * @param result       本次部署结果（含文件清单与数量统计）
+     * @param functionName 功能名（界面填写，可为 null/空，则对应格留空）
+     * @param descText     上线内容描述（界面填写，可多行，可为 null/空则留空）
+     * @param onlineTime   上线时间（界面填写，可为 null/空则留空）
+     * @return 生成的 .docx 绝对路径
+     */
+    public String generateUploadForm(DeployService.DeployResult result,
+                                     String functionName, String descText, String onlineTime) {
+        functionName = trimToNull(functionName);
+        String fileStats = buildFileStats(result);
+        List<String> sources = result.sourceFileNames == null
+                ? Collections.emptyList() : result.sourceFileNames;
+        List<String> results = result.resultFileNames == null
+                ? Collections.emptyList() : result.resultFileNames;
+        String needDirName = buildNeedDirName(functionName, onlineTime);
+        String outputPath = buildFormOutputPath(functionName, onlineTime);
+
+        try {
+            UploadFormGenerator generator = new UploadFormGenerator();
+            generator.generate(functionName == null ? "" : functionName,
+                    descText == null ? "" : descText,
+                    onlineTime == null ? "" : onlineTime,
+                    fileStats, sources, results,
+                    needDirName == null ? "" : needDirName,
+                    outputPath);
+            return outputPath;
+        } catch (Exception e) {
+            throw new RuntimeException("生成上线申请表失败: " + e.getMessage(), e);
+        }
+    }
+
+    /** 去除首尾空白；为空则返回 null */
+    private String trimToNull(String s) {
+        if (s == null) return null;
+        String t = s.trim();
+        return t.isEmpty() ? null : t;
+    }
+
+    /** 文件数量描述，如 "14个java文件，17个class文件，15个jsp文件，5个xml文件" */
+    private String buildFileStats(DeployService.DeployResult result) {
+        List<String> stats = new ArrayList<>();
+        if (result.sourceJavaCount > 0) stats.add(result.sourceJavaCount + "个java文件");
+        if (result.resultClassCount > 0) stats.add(result.resultClassCount + "个class文件");
+        if (result.sourceJspCount > 0) stats.add(result.sourceJspCount + "个jsp文件");
+        if (result.sourceXmlCount > 0) stats.add(result.sourceXmlCount + "个xml文件");
+        return String.join("，", stats);
+    }
+
+    /** 上线申请表文件名（对应官方表名） */
+    private static final String UPLOAD_FORM_FILE_NAME = "海口12345平台系统功能上线申请表.docx";
+
+    /**
+     * 计算申请表输出路径：能构成需求目录时输出到其下「相关文档」目录；
+     * 否则回退 form.output.dir → 用户主目录（不落入模板目录）。
+     */
+    private String buildFormOutputPath(String functionName, String onlineTime) {
+        String dirName = buildNeedDirName(functionName, onlineTime);
+        if (dirName != null) {
+            File parent = new File(functionDir).getParentFile();
+            if (parent != null) {
+                File relDocDir = new File(new File(parent, dirName), "相关文档");
+                return new File(relDocDir, UPLOAD_FORM_FILE_NAME).getPath();
+            }
+        }
+        String outDir = formOutputDir;
+        if (outDir == null || outDir.trim().isEmpty()) {
+            outDir = System.getProperty("user.home");
+        }
+        return outDir + File.separator + UPLOAD_FORM_FILE_NAME;
+    }
 }

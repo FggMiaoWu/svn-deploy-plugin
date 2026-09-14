@@ -12,6 +12,16 @@ repositories {
     mavenCentral()
 }
 
+// 运行时依赖：用 Apache POI 生成/填充上线申请表 docx。
+// 注意：poi-ooxml 默认带 poi-ooxml-lite（精简版），不含 CT_P/CT_Tc 等底层 schema 类，
+// 需改用 poi-ooxml-full 并排除 lite。
+dependencies {
+    implementation("org.apache.poi:poi-ooxml:5.2.5") {
+        exclude(group = "org.apache.poi", module = "poi-ooxml-lite")
+    }
+    implementation("org.apache.poi:poi-ooxml-full:5.2.5")
+}
+
 // 编译需要 JDK 17（IntelliJ 2023+ 要求）
 java {
     sourceCompatibility = JavaVersion.VERSION_17
