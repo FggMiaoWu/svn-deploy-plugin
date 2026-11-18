@@ -1,11 +1,8 @@
 package com.deploy;
 
-import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.Messages;
-import com.intellij.openapi.vfs.LocalFileSystem;
-import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.CheckboxTree;
 import com.intellij.ui.CheckedTreeNode;
 import com.intellij.ui.SimpleTextAttributes;
@@ -31,7 +28,7 @@ import java.util.List;
  * 文件列表用 CheckboxTree 按包/目录路径分组展示，可折叠展开，父子节点联动勾选。
  * <p>
  * 多项目支持：每个项目使用 {项目根}/svn-deploy/deploy.properties 独立配置，
- * 首次使用时自动从内置模板创建，可通过「编辑配置」按钮直接打开修改。
+ * 首次使用时自动从内置模板创建，可直接编辑该配置文件修改。
  */
 public class DeployDialog extends DialogWrapper {
 
@@ -90,8 +87,7 @@ public class DeployDialog extends DialogWrapper {
                     Messages.showInfoMessage(project,
                             "已为当前项目自动创建配置文件：\n"
                                     + service.getConfigPath() + "\n\n"
-                                    + "请按当前项目实际情况修改路径（src.dir / build.dir / test.dir 等），\n"
-                                    + "可点击对话框下方「编辑配置」按钮直接打开修改。",
+                                    + "请按当前项目实际情况修改路径（src.dir / build.dir / test.dir 等）。",
                             "首次使用 - 已创建项目级配置"));
         }
     }
@@ -237,11 +233,19 @@ public class DeployDialog extends DialogWrapper {
         scrollPane.setPreferredSize(new Dimension(600, 280));
         panel.add(scrollPane, gbc);
 
-        // ---- 上线申请表（可选，勾选后弹窗填写，部署后用于生成上线单） ----
-        gbc.gridx = 0; gbc.gridy = 5; gbc.weighty = 0;
+        // ---- 全选 / 排除 / 生成上线申请表 ----
+        gbc.gridy = 5; gbc.weighty = 0;
         gbc.fill = GridBagConstraints.HORIZONTAL;
-        JPanel formPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        formPanel.setBorder(BorderFactory.createTitledBorder("上线申请表（可选生成）"));
+        JPanel optPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        cbSelectAll = new JCheckBox("全选");
+        cbSelectAll.addActionListener(e -> toggleSelectAll(cbSelectAll.isSelected()));
+        cbExcludeMode = new JCheckBox("排除");
+        cbExcludeMode.setToolTipText("勾选的文件将被排除");
+        optPanel.add(cbSelectAll);
+        optPanel.add(Box.createHorizontalStrut(16));
+        optPanel.add(cbExcludeMode);
+        optPanel.add(Box.createHorizontalStrut(16));
+        // 上线申请表（可选，勾选后弹窗填写，部署后用于生成上线单）
         cbGenForm = new JCheckBox("生成上线申请表", false);
         cbGenForm.setToolTipText("勾选后弹出窗口填写功能名称、上线时间、上线内容描述；取消勾选则不生成（如发布测试环境）");
         // 勾选时立即弹出申请表信息窗口；取消弹窗则视为跳过申请表，继续部署
@@ -251,29 +255,11 @@ public class DeployDialog extends DialogWrapper {
                 setGenFormSelected(false);
             }
         });
-        formPanel.add(cbGenForm);
-        panel.add(formPanel, gbc);
-
-        // ---- 全选 / 排除模式 / 编辑配置 ----
-        gbc.gridy = 6; gbc.weighty = 0;
-        gbc.fill = GridBagConstraints.HORIZONTAL;
-        JPanel optPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
-        cbSelectAll = new JCheckBox("全选");
-        cbSelectAll.addActionListener(e -> toggleSelectAll(cbSelectAll.isSelected()));
-        cbExcludeMode = new JCheckBox("排除模式（勾选的文件将被排除）");
-        optPanel.add(cbSelectAll);
-        optPanel.add(Box.createHorizontalStrut(16));
-        optPanel.add(cbExcludeMode);
-        // 编辑配置按钮：打开当前项目的 svn-deploy/deploy.properties
-        JButton btnEditConfig = new JButton("编辑配置");
-        btnEditConfig.setToolTipText("在 IDEA 编辑器中打开当前项目配置文件，修改后保存即生效");
-        btnEditConfig.addActionListener(e -> openConfigFile());
-        optPanel.add(Box.createHorizontalStrut(16));
-        optPanel.add(btnEditConfig);
+        optPanel.add(cbGenForm);
         panel.add(optPanel, gbc);
 
         // ---- 配置文件路径提示 ----
-        gbc.gridy = 7;
+        gbc.gridy = 6;
         JBLabel configPathLabel = new JBLabel("配置: " + service.getConfigPath());
         configPathLabel.setFont(configPathLabel.getFont().deriveFont(11f));
         configPathLabel.setForeground(UIManager.getColor("Label.disabledForeground"));
@@ -393,19 +379,6 @@ public class DeployDialog extends DialogWrapper {
             }
         }
         tfRevisions.setText(sb.toString());
-    }
-
-    /** 在 IDEA 编辑器中打开当前项目配置文件 */
-    private void openConfigFile() {
-        String path = service.getConfigPath();
-        VirtualFile vf = LocalFileSystem.getInstance().findFileByPath(path);
-        if (vf == null) {
-            Messages.showWarningDialog(project, "配置文件不存在: " + path, "提示");
-            return;
-        }
-        // 刷新文件系统，确保读取最新内容
-        vf.refresh(false, false);
-        new OpenFileDescriptor(project, vf).navigate(true);
     }
 
     /**
