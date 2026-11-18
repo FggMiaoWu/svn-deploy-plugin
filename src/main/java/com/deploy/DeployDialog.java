@@ -65,11 +65,14 @@ public class DeployDialog extends DialogWrapper {
     // 排除模式
     private JCheckBox cbExcludeMode;
 
-    // 上线申请表：功能名/需求描述/上线时间手动填写（均非必填）+ 生成开关
-    private JTextField tfFunctionName;
-    private JTextField tfOnlineTime;
-    private JTextArea taRequirementDesc;
+    // 上线申请表：主界面仅保留生成开关，勾选后弹窗填写功能名/上线时间/上线内容描述
     private JCheckBox cbGenForm;
+    // 弹窗确认后填写的申请表字段（均非必填）
+    private String formFunctionName;
+    private String formOnlineTime;
+    private String formRequirementDesc;
+    // 程序化修改勾选框状态时置为 true，避免再次触发弹窗
+    private boolean suppressGenFormEvent;
 
     // 获取到的修改文件（保持顺序，用于回查索引）
     private List<DFile> modifiedFiles = new ArrayList<>();
@@ -234,45 +237,21 @@ public class DeployDialog extends DialogWrapper {
         scrollPane.setPreferredSize(new Dimension(600, 280));
         panel.add(scrollPane, gbc);
 
-        // ---- 上线申请表（可选，部署后用于生成上线单，均非必填） ----
+        // ---- 上线申请表（可选，勾选后弹窗填写，部署后用于生成上线单） ----
         gbc.gridx = 0; gbc.gridy = 5; gbc.weighty = 0;
         gbc.fill = GridBagConstraints.HORIZONTAL;
-        JPanel formPanel = new JPanel();
-        formPanel.setLayout(new BoxLayout(formPanel, BoxLayout.Y_AXIS));
+        JPanel formPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         formPanel.setBorder(BorderFactory.createTitledBorder("上线申请表（可选生成）"));
-
-        // 第一行：功能名称 + 上线时间 + 生成开关
-        JPanel line1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        line1.add(new JBLabel("功能名称:"));
-        tfFunctionName = new JTextField(22);
-        tfFunctionName.setToolTipText("上线申请表中的功能名称，留空则该格留空");
-        line1.add(tfFunctionName);
-        line1.add(Box.createHorizontalStrut(10));
-        line1.add(new JBLabel("上线时间:"));
-        tfOnlineTime = new JTextField(16);
-        // 默认预填当天 23:30（示例格式 YYYY.MM.DD HH:mm），可改，留空则申请表该格留空
-        tfOnlineTime.setText(new java.text.SimpleDateFormat("yyyy.MM.dd").format(new Date()) + " 23:30");
-        tfOnlineTime.setToolTipText("上线申请表中的上线时间，格式示例 2026.09.11 23:30，留空则不填");
-        line1.add(tfOnlineTime);
-        line1.add(Box.createHorizontalStrut(12));
-        cbGenForm = new JCheckBox("生成上线申请表", true);
-        cbGenForm.setToolTipText("取消勾选则不生成上线申请表（如发布测试环境）");
-        line1.add(cbGenForm);
-        formPanel.add(line1);
-
-        // 第二行：上线内容描述（多行文本域）
-        JPanel line2 = new JPanel(new BorderLayout(6, 0));
-        line2.add(new JBLabel("上线内容描述:"), BorderLayout.WEST);
-        taRequirementDesc = new JTextArea(4, 40);
-        taRequirementDesc.setLineWrap(true);
-        taRequirementDesc.setWrapStyleWord(true);
-        taRequirementDesc.setToolTipText("上线申请表中的上线内容描述，可多行，留空则留空");
-        JScrollPane descScroll = new JScrollPane(taRequirementDesc);
-        descScroll.setPreferredSize(new Dimension(600, 78));
-        line2.add(descScroll, BorderLayout.CENTER);
-        formPanel.add(Box.createVerticalStrut(6));
-        formPanel.add(line2);
-
+        cbGenForm = new JCheckBox("生成上线申请表", false);
+        cbGenForm.setToolTipText("勾选后弹出窗口填写功能名称、上线时间、上线内容描述；取消勾选则不生成（如发布测试环境）");
+        // 勾选时立即弹出申请表信息窗口；取消弹窗则视为跳过申请表，继续部署
+        cbGenForm.addActionListener(e -> {
+            if (suppressGenFormEvent) return;
+            if (cbGenForm.isSelected() && !showUploadFormDialog()) {
+                setGenFormSelected(false);
+            }
+        });
+        formPanel.add(cbGenForm);
         panel.add(formPanel, gbc);
 
         // ---- 全选 / 排除模式 / 编辑配置 ----
@@ -429,6 +408,30 @@ public class DeployDialog extends DialogWrapper {
         new OpenFileDescriptor(project, vf).navigate(true);
     }
 
+    /**
+     * 弹出上线申请表信息填写窗口。
+     * 确认后把功能名称/上线时间/上线内容描述保存到字段，返回 true；
+     * 取消则返回 false（调用方取消勾选，跳过申请表但继续部署）。
+     */
+    private boolean showUploadFormDialog() {
+        UploadFormDialog dialog = new UploadFormDialog();
+        if (!dialog.showAndGet()) return false;
+        formFunctionName = dialog.getFunctionName();
+        formOnlineTime = dialog.getOnlineTime();
+        formRequirementDesc = dialog.getRequirementDesc();
+        return true;
+    }
+
+    /** 程序化设置生成勾选框状态（不触发弹窗） */
+    private void setGenFormSelected(boolean selected) {
+        suppressGenFormEvent = true;
+        try {
+            cbGenForm.setSelected(selected);
+        } finally {
+            suppressGenFormEvent = false;
+        }
+    }
+
     /** 获取修改文件并按包路径分组填充勾选树 */
     private void fetchFiles() {
         DeployRequest req = buildRequestForFetch();
@@ -572,9 +575,11 @@ public class DeployDialog extends DialogWrapper {
         }
 
         // 注入上线申请表参数：决定是否生成申请表 & 是否做需求目录归档
-        req.setFunctionName(tfFunctionName != null ? tfFunctionName.getText() : null);
-        req.setOnlineTime(tfOnlineTime != null ? tfOnlineTime.getText() : null);
-        req.setGenerateForm(cbGenForm != null && cbGenForm.isSelected());
+        // 字段值来自勾选时弹出的填写窗口，未勾选/取消弹窗均为空
+        boolean genForm = cbGenForm != null && cbGenForm.isSelected();
+        req.setFunctionName(formFunctionName);
+        req.setOnlineTime(formOnlineTime);
+        req.setGenerateForm(genForm);
 
         // 执行部署
         try {
@@ -584,12 +589,12 @@ public class DeployDialog extends DialogWrapper {
 
             // 部署后生成上线申请表（可勾选关闭；功能名/描述/上线时间非必填）
             String formPath = null;
-            if (cbGenForm != null && cbGenForm.isSelected() && service.isUploadFormEnabled()) {
+            if (genForm && service.isUploadFormEnabled()) {
                 try {
                     formPath = service.generateUploadForm(result,
-                            tfFunctionName != null ? tfFunctionName.getText() : null,
-                            taRequirementDesc != null ? taRequirementDesc.getText() : null,
-                            tfOnlineTime != null ? tfOnlineTime.getText() : null);
+                            formFunctionName,
+                            formRequirementDesc,
+                            formOnlineTime);
                 } catch (Exception fe) {
                     Messages.showWarningDialog(project, "生成上线申请表失败（不影响部署）：\n" + fe.getMessage(), "提示");
                 }
@@ -649,6 +654,80 @@ public class DeployDialog extends DialogWrapper {
         // 用 IDEA 主窗口作为父组件，确保对话框显示在 IDEA 之上
         java.awt.Component parent = WindowManager.getInstance().getFrame(project);
         JOptionPane.showMessageDialog(parent, scrollPane, "部署结果", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    /**
+     * 上线申请表信息填写弹窗。
+     * 主界面空间有限，改为独立弹窗提供更大的「上线内容描述」输入区域；
+     * 再次打开时回填上次确认的内容。
+     */
+    private class UploadFormDialog extends DialogWrapper {
+        private final JTextField tfFunctionName = new JTextField(24);
+        private final JTextField tfOnlineTime = new JTextField(18);
+        private final JTextArea taDesc = new JTextArea(16, 56);
+
+        UploadFormDialog() {
+            super(DeployDialog.this.project, true);
+            setTitle("上线申请表信息");
+            init();
+        }
+
+        @Nullable
+        @Override
+        protected JComponent createCenterPanel() {
+            JPanel panel = new JPanel(new GridBagLayout());
+            GridBagConstraints gbc = new GridBagConstraints();
+            gbc.insets = new Insets(6, 6, 6, 6);
+            gbc.anchor = GridBagConstraints.WEST;
+            gbc.fill = GridBagConstraints.HORIZONTAL;
+
+            // 功能名称
+            gbc.gridx = 0; gbc.gridy = 0; gbc.weightx = 0;
+            panel.add(new JBLabel("功能名称:"), gbc);
+            gbc.gridx = 1; gbc.weightx = 1.0;
+            tfFunctionName.setText(formFunctionName != null ? formFunctionName : "");
+            tfFunctionName.setToolTipText("上线申请表中的功能名称，留空则该格留空");
+            panel.add(tfFunctionName, gbc);
+
+            // 上线时间（默认预填当天 23:30）
+            gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0;
+            panel.add(new JBLabel("上线时间:"), gbc);
+            gbc.gridx = 1; gbc.weightx = 1.0;
+            if (formOnlineTime != null && !formOnlineTime.isEmpty()) {
+                tfOnlineTime.setText(formOnlineTime);
+            } else {
+                tfOnlineTime.setText(new java.text.SimpleDateFormat("yyyy.MM.dd").format(new Date()) + " 23:30");
+            }
+            tfOnlineTime.setToolTipText("上线申请表中的上线时间，格式示例 2026.09.11 23:30，留空则不填");
+            panel.add(tfOnlineTime, gbc);
+
+            // 上线内容描述（大文本域，带滚动条）
+            gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 2; gbc.weightx = 0;
+            panel.add(new JBLabel("上线内容描述:"), gbc);
+            gbc.gridy = 3; gbc.weightx = 1.0; gbc.weighty = 1.0;
+            gbc.fill = GridBagConstraints.BOTH;
+            taDesc.setLineWrap(true);
+            taDesc.setWrapStyleWord(true);
+            taDesc.setText(formRequirementDesc != null ? formRequirementDesc : "");
+            taDesc.setToolTipText("上线申请表中的上线内容描述，可多行，留空则留空");
+            JBScrollPane descScroll = new JBScrollPane(taDesc);
+            descScroll.setPreferredSize(new Dimension(680, 320));
+            panel.add(descScroll, gbc);
+
+            return panel;
+        }
+
+        String getFunctionName() {
+            return tfFunctionName.getText();
+        }
+
+        String getOnlineTime() {
+            return tfOnlineTime.getText();
+        }
+
+        String getRequirementDesc() {
+            return taDesc.getText();
+        }
     }
 
     /**
